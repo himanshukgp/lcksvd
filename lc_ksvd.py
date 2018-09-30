@@ -1,7 +1,7 @@
 import numpy as np
+from numpy.linalg import inv
 from sklearn.cross_validation import StratifiedKFold
-
-
+from ksvd import ApproximateKSVD
 
 
 def class_accuracy(y_pred, y_test):
@@ -9,66 +9,71 @@ def class_accuracy(y_pred, y_test):
     n_correct = np.sum(y_test == y_pred)
     return n_correct / float(y_test.size)
 
+def class_dict_coder(X, y, n_class_atoms=None, n_class=None):
+    # For each class do ksvd using library
+    D = np.zeros((X.shape[0], n_class_atoms*4))
 
-def avg_class_accuracy(y_pred, y_test):
-    """the classification accuracy averaged over the classes"""
-    n_classes = len(set(y_test))
-    class_accs = []
-
-    for c in range(n_classes):
-        n_correct = np.sum(y_test[y_test == c] == y_pred[y_test == c])
-        print ("number of correct = ", n_correct)
-        n_class_samples = y_test[y_test == c].size
-        class_accs.append(n_correct / float(n_class_samples))
-    return np.mean(class_accs)
+    for i in range(n_class):
+        X1 = X[:, y==i]
+        aksvd = ApproximateKSVD(n_components=n_class_atoms)
+        dictionary = aksvd.fit(X1).components_
+        D[:, i*n_class_atoms:(i+1)*n_class_atoms] = dictionary
+    return D
 
 
+class lc_ksvd():
 
-def lc_ksvd():
-
+    def __init__(self, n_class_atoms = 600, n_folds = 10, n_class=4, lambda1=1, lambda2=1):
+        self.n_class = n_class
+        self.D = None
+        self.W = None
+        self.A = None
+        self.n_folds = n_folds
+        self.lambda1 = lambda1
+        self.lambda2 = lambda2
+        self.n_class_atoms = n_class_atoms
+    
     def fit(self, X, y):
         self.__call__(X, y)
 
-
     def __call__(self, X, y):
-        """
-        Simply do a kfold and call the next function.
-        """
-        n_classes = len(set(y))
-        self.folds = StratifiedKFold(y, n_folds=self.n_folds, shuffle=False, random_state=None)
-        score = self.evaluate(X, y)
-
+        self.evaluate_(X, y)
     
-    def evaluate(self, X, y):
-        """
-        evaluate the performance of the classifier
-        trained with the parameters in <param_set>
-        """
-        cv_scores = []
-        # avg_class_accs = []
-        t=0
-        for train_index, test_index in self.folds:
-            # Print fold number before executing each fold
-            print("fold number = ",t)
-            t+=1
+    def evaluate_(self, X, y):
+        folds = StratifiedKFold(y, n_folds=self.n_folds, shuffle=True, random_state=None)
 
+        for train_index, test_index in folds:
             X_train, X_test = X[:, train_index], X[:, test_index]
             y_train, y_test = y[train_index], y[test_index]
-            print("all input shapes", X_train.shape, X_test.shape, y_train.shape )
 
-            # Train the given dataset
             self.train(X_train, y_train)
-            
-            y_pred = self.predict(X_test)
-            y_pred = np.array(y_pred)
-            print("y is predicted", y_pred.shape)
+
+            #y_pred = self.predict(X_test)
+            #y_pred = np.array(y_pred)
 
             class_acc = class_accuracy(y_pred, y_test)
-            # avg_class_acc  = avg_class_accuracy(y_pred,y_test)
-            cv_scores.append(class_acc)
-            # avg_class_accs.append(avg_class_acc)
-            print("average class accuracy:", avg_class_accuracy(y_pred, y_test))
+            print(class_acc)
 
-        avg_cv_score = np.mean(cv_scores)
-        print ("accuracy:", avg_cv_score)
-        return avg_cv_score
+    def train(self, X, y):
+        total_atom_dict = self.n_class_atoms*4
+        n_samples = X.shape[1]
+
+        D = class_dict_coder(X, y, self.n_class_atoms, self.n_class)
+        Z = np.zeros((total_atom_dict, n_samples))
+
+        Q = np.zeros((total_atom_dict, n_samples))
+        for i in range(self.n_class):
+            Q[i*self.n_class_atoms:(i+1)*self.n_class_atoms,y==i]=1
+
+        H = np.zeros((self.n_class, X.shape[1])).astype(int)
+        for i in range(X.shape[1]):
+            H[y[i], i] = 1
+        
+        I = np.eye(total_atom_dict)
+
+        W = np.dot(inv(np.dot(Z, Z.T) + self.lambda1 * I), np.dot(Z, H.T)).T
+        G = np.dot(inv(np.dot(Z, Z.T) + self.lambda2 * I), np.dot(Z, Q.T)).T
+
+        print(D.shape, Z.shape)
+        
+
