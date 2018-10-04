@@ -6,6 +6,7 @@ from sklearn.utils.extmath import randomized_svd
 from sklearn.decomposition import SparseCoder
 import sys
 import scipy
+from sklearn.preprocessing import normalize
 
 ddot = scipy.linalg.blas.ddot
 def fast_dot(a,b):
@@ -15,7 +16,7 @@ def fast_dot(a,b):
     a_dim = a.ndim
     b_dim = b.ndim
     if a_dim == 2 and b_dim == 2:
-        return np.dot(a,np.transpose(b))
+        return np.dot(a,b)
     elif a_dim == 2 and b_dim == 1 or a_dim == 1 and b_dim == 2:
         # matrix to vector product
         # GEMV is slower than np.dot-why?
@@ -28,6 +29,7 @@ def ksvd(Y, D, X, n_cycles=1, verbose=True):
     n_atoms = D.shape[1]
     n_features, n_samples = Y.shape
     unused_atoms = []
+    #print(D.shape, X.shape, Y.shape)
     R = Y - fast_dot(D, X)
 
     for c in range(n_cycles):
@@ -60,12 +62,12 @@ def class_dict_coder(X, y, n_class_atoms=None, n_class=None):
     D = np.zeros((X.shape[0], n_class_atoms*4))
 
     for i in range(n_class):
-        print("Doing dictionary initialization for ", i)
+        #print("Doing dictionary initialization for ", i)
         X1 = X[:, y==i]
         aksvd = ApproximateKSVD(n_components=n_class_atoms)
         dictionary = aksvd.fit(np.transpose(X1)).components_
         D[:, i*n_class_atoms:(i+1)*n_class_atoms] = np.transpose(dictionary)
-        print("Done dictionary initialization for ", i)
+        #print("Done dictionary initialization for ", i)
     return D
 
 
@@ -100,21 +102,33 @@ class lc_ksvd():
             y_train, y_test = y[train_index], y[test_index]
 
             self.train(X_train, y_train)
-            print(self.D.shape)
+            #print(self.D.shape)
 
-            #y_pred = self.predict(X_test)
-            #y_pred = np.array(y_pred)
-
-            #class_acc = class_accuracy(y_pred, y_test)
-            #print(class_acc)
+            y_pred = self.predict(X_test)
+            
+            class_acc = class_accuracy(y_pred, y_test)
+            print("Accuracy = ", class_acc)
+            print("")
 
     def train(self, X, y):
         total_atom_dict = self.n_class_atoms*4
         n_features, n_samples = X.shape
 
-
+        print("Initializing Dictionary")
         D = class_dict_coder(X, y, self.n_class_atoms, self.n_class)
+
+        #np.save("D", D)
+        #D=np.load("D.npy")
         Z = np.zeros((total_atom_dict, n_samples))
+        #print(Z.shape)
+
+        print("Find sparse initial")
+        coder = SparseCoder(dictionary=np.transpose(D), transform_n_nonzero_coefs=self.n_nonzero,
+                                 transform_algorithm='omp')
+        Z = coder.transform(np.transpose(X))
+        Z = np.transpose(Z)
+        #np.save("Z",Z)
+        #Z = np.load("Z.npy")
 
         Q = np.zeros((total_atom_dict, n_samples))
         for i in range(self.n_class):
@@ -129,43 +143,80 @@ class lc_ksvd():
         W = np.dot(inv(np.dot(Z, Z.T) + self.lambda1 * I), np.dot(Z, H.T)).T
         G = np.dot(inv(np.dot(Z, Z.T) + self.lambda2 * I), np.dot(Z, Q.T)).T
 
-        print(Z.shape, Q.shape, H.shape, W.shape, G.shape)
+        #print(Z.shape, Q.shape, H.shape, W.shape, G.shape)
 
         _X = np.vstack((X, np.sqrt(self.alpha) * Q))
         _X = np.vstack((_X, np.sqrt(self.beta) * H))
 
-        D = D / np.linalg.norm(D)
-        G = G / np.linalg.norm(G)
-        W = W / np.linalg.norm(W)
+        D = normalize(D, axis=0)
+        G = normalize(G, axis=0)
+        W = normalize(W, axis=0)
+        #D = D / np.linalg.norm(D)
+        #G = G / np.linalg.norm(G)
+        #W = W / np.linalg.norm(W)
 
         _D = np.vstack((D, np.sqrt(self.alpha) * G))
         _D = np.vstack((_D, np.sqrt(self.beta) * W))
 
-        _D = _D / np.linalg.norm(_D)
+        D_1 = np.sum(np.abs(_D)**2,axis=0)**(1./2)
+        for i in range(_D.shape[1]):
+            _D[:,i] = _D[:,i] / D_1[i]
 
+        print("optimizing Dictionary")
         for it in range(self.max_iter):
-
+            print("Iteration number = ", it)
             D = np.nan_to_num(D)
             X = np.nan_to_num(X)
 
             coder = SparseCoder(dictionary=np.transpose(D), transform_n_nonzero_coefs=self.n_nonzero,
                                  transform_algorithm='omp')
             Z = coder.transform(np.transpose(X))
+            Z = np.transpose(Z)
+            #print(Z.shape)
 
             Z = np.nan_to_num(Z)
+            #print("Shape of sparse vector", Z.shape)
             _D, _, unused_atoms = ksvd(_X, _D, Z, verbose=True)
 
             D = _D[:n_features, :]
             G = _D[n_features:n_features + total_atom_dict, :]
             W = _D[n_features + total_atom_dict:, :]
 
-            D = D / np.linalg.norm(D)
-            G = G / np.linalg.norm(G)
-            W = W / np.linalg.norm(W)
+            D = normalize(D, axis=0)
+            G = normalize(G, axis=0)
+            W = normalize(W, axis=0)
+            #D = D / np.linalg.norm(D)
+            #G = G / np.linalg.norm(G)
+            #W = W / np.linalg.norm(W)
 
             _D = np.vstack((D, np.sqrt(self.alpha) * G))
             _D = np.vstack((_D, np.sqrt(self.beta) * W))
 
-            _D = _D / np.linalg.norm(_D)
-
+            _D = normalize(_D)
+        
         self.D, Z, self.W = D, Z, W
+
+    def predict(self, X_test):
+        n_samples = X_test.shape[1]
+        X = X_test
+
+        D = self.D
+        W = self.W
+
+        D = np.nan_to_num(D)
+        D1 = np.sum(np.abs(D)**2,axis=0)**(1./2)
+        for i in range(D.shape[1]):
+            D[:,i] = D[:,i] / D1[i]
+        #print(D,X)
+
+        print("predicting")
+        coder = SparseCoder(dictionary=np.transpose(D), transform_n_nonzero_coefs=self.n_nonzero,
+                                 transform_algorithm='omp')
+        Z = coder.transform(np.transpose(X))
+        #print(Z.shape, Z)
+        #print(np.count_nonzero(Z))
+        #print(np.count_nonzero(Z, axis=0))
+        pred = np.zeros((n_samples, ))
+        for i in range(n_samples):
+            pred[i] = np.argmax(np.dot(W, Z[i,:]))
+        return pred
